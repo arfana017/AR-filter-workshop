@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>GWC × Snapchat — AR Filter Workshop</title>
+
+  <!--
+  ═══════════════════════════════════════════════════════════════
+  GIRLS WHO CODE × SNAPCHAT — AR FILTER WORKSHOP
+  ═══════════════════════════════════════════════════════════════
+  LIBRARIES USED:
+    • face-api.js  — face detection + 68-point landmark model
+                    (the same concepts Snapchat uses, just lighter)
+    • Canvas API   — built into every browser, no install needed
+  ═══════════════════════════════════════════════════════════════
+  -->
+
+  <!-- face-api.js from CDN — detects faces and gives us landmark points -->
+  <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+
+  <style>
+    /* ── VISUAL DESIGN ─────────────────────────────────────── */
+    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;700&display=swap');
+
+    :root {
+      --snap-yellow: #FFFC00;
+      --bg: #0d0d0d;
+      --surface: #161616;
+      --border: rgba(255,255,255,0.08);
+      --text: #f0f0f0;
+      --muted: #888;
+      --radius: 12px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Space Grotesk', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+
+    header h1 {
+      font-size: clamp(1.4rem, 4vw, 2rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    header h1 span {
+      color: var(--snap-yellow);
+    }
+
+    header p {
+      color: var(--muted);
+      font-size: 0.85rem;
+      margin-top: 0.4rem;
+      font-family: 'DM Mono', monospace;
+    }
+
+    /* ── MAIN LAYOUT ───────────────────────────────────────── */
+    .app {
+      display: grid;
+      grid-template-columns: 1fr 260px;
+      gap: 1.25rem;
+      width: 100%;
+      max-width: 960px;
+    }
+
+    @media (max-width: 700px) {
+      .app { grid-template-columns: 1fr; }
+    }
+
+    /* ── CANVAS AREA ───────────────────────────────────────── */
+    .camera-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      position: relative;
+      aspect-ratio: 4/3;
+    }
+
+    /* The raw webcam video — hidden, just used as a source */
+    #video {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+      width: 1px;
+      height: 1px;
+    }
+
+    /* This is what everyone sees — we draw onto it every frame */
+    #canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      /* mirroring handled in JS — keeps overlays and text aligned */
+    }
+
+    .status-bar {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(8px);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--muted);
+      padding: 6px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .status-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #555;
+      display: inline-block;
+      margin-right: 6px;
+      transition: background 0.3s;
+    }
+    .status-dot.active { background: #4ade80; }
+    .status-dot.detecting { background: var(--snap-yellow); }
+
+    /* ── SIDEBAR CONTROLS ──────────────────────────────────── */
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem;
+    }
+
+    .panel-label {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.65rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 0.75rem;
+    }
+
+    /* ── FILTER BUTTONS ────────────────────────────────────── */
+    .filter-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .filter-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 0.75rem;
+      padding: 8px 6px;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.15s;
+    }
+
+    .filter-btn:hover { border-color: rgba(255,255,255,0.2); background: rgba(255,255,255,0.05); }
+
+    .filter-btn.active {
+      border-color: var(--snap-yellow);
+      background: rgba(255, 252, 0, 0.08);
+      color: var(--snap-yellow);
+    }
+
+    .filter-emoji { display: block; font-size: 1.3rem; margin-bottom: 3px; }
+
+    /* ── SLIDERS ───────────────────────────────────────────── */
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .slider-row label {
+      font-size: 0.75rem;
+      color: var(--muted);
+      width: 60px;
+      flex-shrink: 0;
+    }
+
+    .slider-row input[type=range] {
+      flex: 1;
+      accent-color: var(--snap-yellow);
+    }
+
+    .slider-row span {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--muted);
+      width: 32px;
+      text-align: right;
+    }
+
+    /* ── TEXT OVERLAY ──────────────────────────────────────── */
+    .text-input {
+      width: 100%;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.8rem;
+      padding: 8px 10px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .text-input:focus { border-color: var(--snap-yellow); }
+
+    /* ── COLOR PICKER ──────────────────────────────────────── */
+    .color-row {
+      display: flex;
+      gap: 6px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+
+    .color-swatch {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: border-color 0.15s;
+    }
+    .color-swatch.active { border-color: white; }
+
+    /* ── LANDMARK TOGGLE ───────────────────────────────────── */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 8px;
+    }
+
+    .toggle-row label { font-size: 0.78rem; color: var(--muted); }
+
+    .toggle {
+      position: relative;
+      width: 36px; height: 20px;
+    }
+
+    .toggle input { opacity: 0; width: 0; height: 0; }
+
+    .toggle-slider {
+      position: absolute;
+      inset: 0;
+      background: #333;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .toggle-slider::before {
+      content: '';
+      position: absolute;
+      width: 14px; height: 14px;
+      left: 3px; top: 3px;
+      background: white;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+
+    .toggle input:checked + .toggle-slider { background: var(--snap-yellow); }
+    .toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
+
+    /* ── SNAP CONNECT CALLOUT ──────────────────────────────── */
+    .snap-callout {
+      background: rgba(255, 252, 0, 0.06);
+      border: 1px solid rgba(255, 252, 0, 0.2);
+      border-radius: var(--radius);
+      padding: 0.85rem;
+      font-size: 0.75rem;
+      line-height: 1.6;
+      color: rgba(255,255,255,0.7);
+    }
+
+    .snap-callout strong { color: var(--snap-yellow); }
+
+    /* ── LOADING SCREEN ────────────────────────────────────── */
+    #loading {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+      z-index: 100;
+      transition: opacity 0.4s;
+    }
+
+    #loading.hidden { opacity: 0; pointer-events: none; }
+
+    .loader-text {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    .loader-bar {
+      width: 200px;
+      height: 2px;
+      background: #222;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .loader-fill {
+      height: 100%;
+      background: var(--snap-yellow);
+      width: 0%;
+      transition: width 0.3s;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Loading overlay shown while face-api models download -->
+  <div id="loading">
+    <h2 style="font-size:1.1rem; font-weight:500;">loading face detection models<span style="color:var(--snap-yellow)">_</span></h2>
+    <div class="loader-bar"><div class="loader-fill" id="loader-fill"></div></div>
+    <p class="loader-text" id="loader-msg">initialising...</p>
+  </div>
+
+  <header>
+    <h1>GWC <span>×</span> Snapchat — AR Filter Workshop</h1>
+    <p>face-api.js + canvas API · live webcam · 68-point landmarks</p>
+  </header>
+
+  <div class="app">
+
+    <!-- ── CAMERA + CANVAS ── -->
+    <div class="camera-wrap">
+      <!--
+        WALK THROUGH THIS WITH THE CLUB:
+        We use a hidden <video> element as the webcam source.
+        The browser reads frames from it and we draw them onto <canvas>.
+        That way we can manipulate every pixel before anyone sees it.
+      -->
+      <video id="video" autoplay muted playsinline></video>
+      <canvas id="canvas"></canvas>
+
+      <div class="status-bar">
+        <div>
+          <span class="status-dot" id="status-dot"></span>
+          <span id="status-text">waiting...</span>
+        </div>
+        <span id="fps-counter">0 fps</span>
+      </div>
+    </div>
+
+    <!-- ── SIDEBAR ── -->
+    <div class="sidebar">
+
+      <!-- Filter picker -->
+      <div class="panel">
+        <div class="panel-label">Choose a filter</div>
+        <div class="filter-grid">
+          <button class="filter-btn active" data-filter="none" onclick="setFilter(this)">
+            <span class="filter-emoji">🚫</span>no filter
+          </button>
+          <button class="filter-btn" data-filter="warmth" onclick="setFilter(this)">
+            <span class="filter-emoji">🌅</span>warmth
+          </button>
+          <button class="filter-btn" data-filter="grayscale" onclick="setFilter(this)">
+            <span class="filter-emoji">🩶</span>grayscale
+          </button>
+          <button class="filter-btn" data-filter="beauty" onclick="setFilter(this)">
+            <span class="filter-emoji">✨</span>beauty
+          </button>
+          <button class="filter-btn" data-filter="ears" onclick="setFilter(this)">
+            <span class="filter-emoji">🐶</span>dog ears
+          </button>
+          <button class="filter-btn" data-filter="sunglasses" onclick="setFilter(this)">
+            <span class="filter-emoji">😎</span>sunglasses
+          </button>
+          <button class="filter-btn" data-filter="crown" onclick="setFilter(this)">
+            <span class="filter-emoji">👑</span>crown
+          </button>
+          <button class="filter-btn" data-filter="glitch" onclick="setFilter(this)">
+            <span class="filter-emoji">📺</span>glitch
+          </button>
+        </div>
+      </div>
+
+      <!-- Intensity slider -->
+      <div class="panel">
+        <div class="panel-label">Controls</div>
+        <div class="slider-row">
+          <label>intensity</label>
+          <input type="range" id="intensity" min="0" max="100" value="60" step="1"
+                 oninput="document.getElementById('int-val').textContent=this.value+'%'">
+          <span id="int-val">60%</span>
+        </div>
+        <div class="slider-row">
+          <label>text size</label>
+          <input type="range" id="text-size" min="14" max="60" value="28" step="1"
+                 oninput="document.getElementById('ts-val').textContent=this.value+'px'">
+          <span id="ts-val">28px</span>
+        </div>
+      </div>
+
+      <!-- Text overlay -->
+      <div class="panel">
+        <div class="panel-label">Text overlay</div>
+        <input class="text-input" id="overlay-text" type="text" maxlength="24" placeholder="type anything...">
+        <div class="color-row" id="color-row">
+          <!-- JS fills these in -->
+        </div>
+        <div class="toggle-row" style="margin-top:12px;">
+          <label>show landmarks</label>
+          <label class="toggle">
+            <input type="checkbox" id="show-landmarks">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Snapchat connection callout — use this as your bridge moment! -->
+      <div class="snap-callout">
+        <!--
+          WALK THROUGH MOMENT:
+          Read this callout to the club — it's the bridge between
+          what we're coding and what Snap engineers actually ship.
+        -->
+        <strong>how Snap does this irl →</strong><br>
+        We're using 68 landmark points. Snap's production model uses <strong>hundreds of 3D landmarks</strong>
+        tracked by a neural net in real-time — on your phone's GPU.
+      </div>
+
+    </div>
+  </div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// WALK THROUGH THIS SECTION WITH THE CLUB FIRST
+// "This is the setup — the boring but important plumbing."
+// ═══════════════════════════════════════════════════════════════
+
+const video    = document.getElementById('video');
+const canvas   = document.getElementById('canvas');
+const ctx      = canvas.getContext('2d');
+const statusDot  = document.getElementById('status-dot');
+const statusText = document.getElementById('status-text');
+const fpsCounter = document.getElementById('fps-counter');
+
+// Overlay images — drop your PNGs into /assets/
+// They must have transparent backgrounds (.png)
+// ─────────────────────────────────────────────
+// WALK THROUGH: explain what new Image() does —
+// it pre-loads the file so we're not fetching mid-frame.
+const overlayImgs = {
+  ears:       loadImg('assets/dog-ears.png'),
+  sunglasses: loadImg('assets/sunglasses.png'),
+  crown:      loadImg('assets/crown.png'),
+};
+
+function loadImg(src) {
+  const img = new Image();
+  img.src = src;
+  return img;
+}
+
+// App state — all our settings live here
+let currentFilter  = 'none';
+let faceDetections = [];   // updated every frame by face-api
+let lastFpsTime    = performance.now();
+let frameCount     = 0;
+
+// Text overlay colour options
+const textColors = ['#FFFC00','#ffffff','#ff4ecd','#00f5d4','#ff6b35'];
+let activeColor = textColors[0];
+
+// Build the colour swatches in the sidebar
+const colorRow = document.getElementById('color-row');
+textColors.forEach(c => {
+  const sw = document.createElement('div');
+  sw.className = 'color-swatch' + (c === activeColor ? ' active' : '');
+  sw.style.background = c;
+  sw.onclick = () => {
+    document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
+    sw.classList.add('active');
+    activeColor = c;
+  };
+  colorRow.appendChild(sw);
+});
+
+// ─────────────────────────────────────────────────────────────
+// STEP 1 — Load face-api models, then start the webcam
+// WALK THROUGH: "Models are neural network weights. face-api
+// ships several — we need tinyFaceDetector for speed, and
+// faceLandmark68Net for the 68 dot skeleton you'll see."
+// ─────────────────────────────────────────────────────────────
+async function init() {
+  setStatus('loading models...', false);
+  setLoader(10, 'downloading face detector...');
+
+  // Models live in /models — see README.md for download instructions
+  const MODEL_URL = './models';
+
+  await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+  setLoader(50, 'downloading landmark model...');
+
+  await faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL);
+  setLoader(100, 'models ready!');
+
+  // Small delay so users can see the 100% loader
+  await new Promise(r => setTimeout(r, 400));
+  document.getElementById('loading').classList.add('hidden');
+
+  startWebcam();
+}
+
+// ─────────────────────────────────────────────────────────────
+// STEP 2 — Request webcam access
+// WALK THROUGH: "navigator.mediaDevices.getUserMedia is the
+// browser API that asks for camera permission. It returns a
+// Promise — async/await makes that readable."
+// ─────────────────────────────────────────────────────────────
+async function startWebcam() {
+  setStatus('requesting camera...', false);
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480, facingMode: 'user' }
+    });
+    video.srcObject = stream;
+    video.onloadedmetadata = () => {
+      canvas.width  = video.videoWidth;
+      canvas.height = video.videoHeight;
+      setStatus('camera active', true);
+      loop(); // kick off the render loop
+    };
+  } catch (err) {
+    setStatus('camera error — allow access in browser', false);
+    console.error(err);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// THE MAIN RENDER LOOP — runs ~30 times per second
+// WALK THROUGH: "requestAnimationFrame is the browser's way of
+// saying 'call this function every time I'm about to repaint
+// the screen.' It's how games, animations, and AR all work."
+// ─────────────────────────────────────────────────────────────
+async function loop() {
+  // 1. Draw the webcam frame mirrored in JS (selfie-camera style).
+  //    We flip only the video — overlays, text, and landmarks are drawn
+  //    afterwards in normal coordinates so they stay correctly aligned.
+  ctx.save();
+  ctx.translate(canvas.width, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  ctx.restore();
+
+  // 2. Get the current pixel data — we'll manipulate this
+  //    for colour-based filters (warmth, grayscale, etc.)
+  if (['warmth','grayscale','beauty','glitch'].includes(currentFilter)) {
+    applyPixelFilter();   // ← CODED TOGETHER IN STEP 3
+  }
+
+  // 3. Draw face overlays if we have a detection
+  if (faceDetections.length > 0) {
+    faceDetections.forEach(det => {
+      const landmarks = det.landmarks;
+
+      // Draw the 68-point skeleton if the toggle is on
+      if (document.getElementById('show-landmarks').checked) {
+        drawLandmarks(landmarks);   // ← see helper below
+      }
+
+      // Draw the chosen face overlay
+      if (currentFilter === 'ears')        drawEars(landmarks);        // ← CODED TOGETHER IN STEP 4
+      if (currentFilter === 'sunglasses')  drawSunglasses(landmarks);  // ← CODED TOGETHER IN STEP 4
+      if (currentFilter === 'crown')       drawCrown(landmarks);
+    });
+  }
+
+  // 4. Text overlay
+  const text = document.getElementById('overlay-text').value;
+  if (text) drawText(text);   // ← CODED TOGETHER IN STEP 5
+
+  // 5. FPS counter (good debugging habit to show the club)
+  frameCount++;
+  const now = performance.now();
+  if (now - lastFpsTime > 1000) {
+    fpsCounter.textContent = frameCount + ' fps';
+    frameCount = 0;
+    lastFpsTime = now;
+  }
+
+  // 6. Run face detection asynchronously — we don't await it
+  //    inside the loop or we'd block rendering to 1fps!
+  detectFaces();
+
+  requestAnimationFrame(loop);
+}
+
+// ─────────────────────────────────────────────────────────────
+// FACE DETECTION — runs in parallel with the render loop
+// WALK THROUGH: "This calls face-api's neural network. It finds
+// every face in the frame and returns bounding boxes + the 68
+// landmark points. We store results in faceDetections[] so the
+// render loop can use them."
+// ─────────────────────────────────────────────────────────────
+let detecting = false;
+async function detectFaces() {
+  if (detecting) return; // don't stack calls
+  detecting = true;
+  const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 });
+  faceDetections = await faceapi.detectAllFaces(video, options).withFaceLandmarks(true) || [];
+  const found = faceDetections.length > 0;
+  statusDot.className = 'status-dot' + (found ? ' detecting' : ' active');
+  statusText.textContent = found ? `${faceDetections.length} face(s) detected` : 'camera active — no face yet';
+  detecting = false;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ↓↓↓  CODE THESE FUNCTIONS TOGETHER WITH THE CLUB  ↓↓↓
+// ═══════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────
+// STEP 3 — Pixel manipulation filters
+// WALK THROUGH: "getImageData() gives us a flat array of every
+// pixel — [R,G,B,A, R,G,B,A, ...]. We loop through and tweak
+// the numbers, then put it back. This is literally what Instagram
+// and Snap filters do under the hood."
+// ─────────────────────────────────────────────────────────────
+function applyPixelFilter() {
+  const intensity = parseInt(document.getElementById('intensity').value) / 100;
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = imageData.data; // the flat pixel array
+
+  for (let i = 0; i < d.length; i += 4) {
+    // d[i]   = Red   (0–255)
+    // d[i+1] = Green (0–255)
+    // d[i+2] = Blue  (0–255)
+    // d[i+3] = Alpha (0–255, we usually leave this alone)
+
+    if (currentFilter === 'warmth') {
+      // ── CODE THIS TOGETHER: ask "what does adding to red do?"
+      d[i]   = Math.min(255, d[i]   + intensity * 50);   // more red
+      d[i+2] = Math.max(0,   d[i+2] - intensity * 30);   // less blue
+      // CHALLENGE: what if we boosted green too? what would that look like?
+    }
+
+    else if (currentFilter === 'grayscale') {
+      // ── CODE THIS TOGETHER: explain weighted luminance
+      // Human eyes are most sensitive to green, least to blue
+      const grey = d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114;
+      d[i] = d[i+1] = d[i+2] = grey * intensity + d[i] * (1 - intensity);
+    }
+
+    else if (currentFilter === 'beauty') {
+      // ── CODE THIS TOGETHER: brighten + gentle pink tint
+      const bright = intensity * 35;
+      d[i]   = Math.min(255, d[i]   + bright + 5);   // red boost (warmth)
+      d[i+1] = Math.min(255, d[i+1] + bright);
+      d[i+2] = Math.min(255, d[i+2] + bright);
+    }
+
+    else if (currentFilter === 'glitch') {
+      // ── CODE THIS TOGETHER: shift the red channel sideways
+      // WALK THROUGH: "This is a classic RGB-split glitch effect —
+      // we offset the red channel from blue/green."
+      const glitchOffset = Math.round(intensity * 15) * 4;
+      const offsetIdx = Math.min(d.length - 4, i + glitchOffset);
+      d[i] = d[offsetIdx]; // steal red from a nearby pixel
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+}
+
+// ─────────────────────────────────────────────────────────────
+// STEP 4a — Dog ears overlay, placed using face landmarks
+// WALK THROUGH: "face-api gives us 68 numbered points.
+// Point 0 = left jaw edge, point 16 = right jaw edge,
+// point 27 = nose bridge top. We use those to figure out
+// where the face is and how big it is — then place our PNG."
+//
+// Landmark map: https://ibug.doc.ic.ac.uk/resources/facial-point-annotations/
+// ─────────────────────────────────────────────────────────────
+function drawEars(landmarks) {
+  const pts = landmarks.positions; // array of {x, y} objects
+
+  // ── CODE THIS TOGETHER ──
+  // Measure face width from left edge (pt 0) to right edge (pt 16)
+  const faceLeft  = pts[0].x;
+  const faceRight = pts[16].x;
+  const faceWidth = faceRight - faceLeft;
+  const faceTop   = pts[19].y; // top of the brow
+
+  // Scale and position the ears image above the face
+  const earsW = faceWidth * 1.5;                 // a bit wider than face
+  const earsH = earsW * 0.55;                    // maintain aspect ratio
+  const earsX = (faceLeft + faceRight) / 2 - earsW / 2;  // centred
+  const earsY = faceTop - earsH * 0.7;           // sit above the brow
+
+  // Mirror the canvas transform (we mirrored the video with CSS,
+  // so we need to un-mirror for the overlay to face the right way)
+  // Mirror the x position to match the flipped video frame
+  const mirroredEarsX = canvas.width - earsX - earsW;
+  ctx.drawImage(overlayImgs.ears, mirroredEarsX, earsY, earsW, earsH);
+
+  // CHALLENGE: try tweaking the multipliers — make the ears bigger, lower, etc.
+  // SNAP CONNECTION: "Snap anchors overlays to specific 3D mesh points, so
+  // they rotate and tilt with your head. Ours is flat — that's the difference
+  // between 68 2D points and a full 3D face mesh."
+}
+
+// ─────────────────────────────────────────────────────────────
+// STEP 4b — Sunglasses overlay
+// WALK THROUGH: "Same idea — but now we use the eye landmarks
+// to get the exact width and height of the eye region."
+// ─────────────────────────────────────────────────────────────
+function drawSunglasses(landmarks) {
+  const pts = landmarks.positions;
+
+  // ── CODE THIS TOGETHER ──
+  // Left eye outer = pt 36, right eye outer = pt 45
+  const leftEye  = pts[36];
+  const rightEye = pts[45];
+
+  const glassesW = (rightEye.x - leftEye.x) * 1.7;
+  const glassesH = glassesW * 0.42;
+  const glassesX = (leftEye.x + rightEye.x) / 2 - glassesW / 2;
+  const glassesY = (leftEye.y + rightEye.y) / 2 - glassesH * 0.45;
+
+  const mirroredGlassesX = canvas.width - glassesX - glassesW;
+  ctx.drawImage(overlayImgs.sunglasses, mirroredGlassesX, glassesY, glassesW, glassesH);
+}
+
+// Crown — sits on top of the head
+function drawCrown(landmarks) {
+  const pts = landmarks.positions;
+  const faceLeft  = pts[0].x;
+  const faceRight = pts[16].x;
+  const faceWidth = faceRight - faceLeft;
+  const faceTop   = Math.min(...pts.slice(17, 27).map(p => p.y)); // brow top
+
+  const crownW = faceWidth * 1.1;
+  const crownH = crownW * 0.65;
+  const crownX = (faceLeft + faceRight) / 2 - crownW / 2;
+  const crownY = faceTop - crownH * 0.9;
+
+  const mirroredCrownX = canvas.width - crownX - crownW;
+  ctx.drawImage(overlayImgs.crown, mirroredCrownX, crownY, crownW, crownH);
+}
+
+// ─────────────────────────────────────────────────────────────
+// STEP 5 — Text overlay
+// WALK THROUGH: "Canvas text needs stroke (outline) + fill.
+// We do stroke first so the fill sits on top — otherwise the
+// outline covers the fill colour."
+// ─────────────────────────────────────────────────────────────
+function drawText(text) {
+  const size = parseInt(document.getElementById('text-size').value);
+
+  // ── CODE THIS TOGETHER ──
+  ctx.save();
+  ctx.font = `700 ${size}px 'Space Grotesk', sans-serif`;
+  ctx.textBaseline = 'bottom';
+
+  // Stroke first (outline), then fill on top
+  ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+  ctx.lineWidth = size * 0.18;
+  ctx.lineJoin  = 'round';
+  // Text at bottom-left of the mirrored frame
+  const textX = 18;
+  const textY = canvas.height - 18;
+  ctx.strokeText(text, textX, textY);
+  ctx.fillStyle = activeColor;
+  ctx.fillText(text, textX, textY);
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────────────────────
+// BONUS: Draw the 68 landmark dots
+// WALK THROUGH: "Toggle this on to see the skeleton — this is
+// what the neural net actually sees. Every dot is a number."
+// ─────────────────────────────────────────────────────────────
+function drawLandmarks(landmarks) {
+  const pts = landmarks.positions;
+  pts.forEach((pt, i) => {
+    // Mirror x coordinate to match the flipped canvas
+    const x = canvas.width - pt.x;
+    ctx.beginPath();
+    ctx.arc(x, pt.y, 2, 0, Math.PI * 2);
+    ctx.fillStyle = '#FFFC00';
+    ctx.fill();
+
+    // Show point numbers if zoomed in (helps explain to club)
+    if (i % 5 === 0) {
+      ctx.font = '9px DM Mono, monospace';
+      ctx.fillStyle = 'rgba(255,252,0,0.7)';
+      ctx.fillText(i, x + 3, pt.y - 3);
+    }
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// UTILITY HELPERS
+// ─────────────────────────────────────────────────────────────
+function setFilter(btn) {
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentFilter = btn.dataset.filter;
+}
+
+function setStatus(msg, active) {
+  statusText.textContent = msg;
+  statusDot.className = 'status-dot' + (active ? ' active' : '');
+}
+
+function setLoader(pct, msg) {
+  document.getElementById('loader-fill').style.width = pct + '%';
+  document.getElementById('loader-msg').textContent = msg;
+}
+
+// ─────────────────────────────────────────────────────────────
+// KICK EVERYTHING OFF
+// Wait for face-api to be available before calling init
+// ─────────────────────────────────────────────────────────────
+function waitForFaceApi() {
+  if (typeof faceapi !== 'undefined') {
+    init();
+  } else {
+    setTimeout(waitForFaceApi, 100);
+  }
+}
+waitForFaceApi();
+</script>
+
+</body>
+</html>
