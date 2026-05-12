@@ -1,0 +1,7 @@
+# macOS
+.DS_Store
+
+# Models are large — club members download them separately (see README)
+# Comment this out if you want to commit the models to the repo
+models/*
+!models/.gitkeep
